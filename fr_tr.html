@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Tower of Hanoi — 3 Levels (Save to Firebase)</title>
+    <style>
+        body { font-family: system-ui, Arial; background:#0b1020; color:#e8eefc; margin:0; padding:20px; }
+        h1 { text-align:center; margin-bottom:8px; }
+        #gameWrap { display:flex; gap:20px; justify-content:center; margin-top:12px; }
+        .peg { width:180px; min-height:220px; background:#0e1730; border-radius:8px; padding:12px; display:flex; flex-direction:column-reverse; align-items:center; box-shadow: 0 6px 18px rgba(0,0,0,0.6); cursor:pointer; }
+        .peg-label { margin-top:8px; font-size:14px; opacity:0.7; }
+        .disk { height:28px; margin:6px 0; border-radius:6px; background:linear-gradient(180deg,#6fa3ff,#3169ff); display:flex; align-items:center; justify-content:center; color:#021; font-weight:600; box-shadow:0 4px 8px rgba(0,0,0,0.45); user-select:none; }
+        #hud { text-align:center; margin-top:14px; display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap;}
+        button { padding:8px 12px; border-radius:8px; border:none; cursor:pointer; background:#3b82f6; color:white; font-weight:600; }
+        button.secondary { background:#64748b; }
+        #resultsPanel { max-width:920px; margin:18px auto; background:#071028; padding:14px; border-radius:10px; display:none; }
+        input, label { display:block; margin:8px 0; padding:8px; border-radius:8px; border:1px solid #2b3446; background:#0b1220; color:#e8eefc; width:100%; box-sizing:border-box; }
+        .row { display:flex; gap:12px; }
+        .small { width:150px; }
+        pre { background:#041022; padding:10px; border-radius:8px; overflow:auto; }
+        .picked { outline: 3px dashed #ffd66b; transform: translateY(-6px); }
+        footer { text-align:center; margin-top:18px; color:#9fb0d1; opacity:0.9; font-size:13px; }
+    </style>
+</head>
+<body>
+<h1>Tower of Hanoi — 3 Levels</h1>
+<div id="levelText" style="text-align:center; opacity:0.9">Level 1 — 3 disks</div>
+
+<div id="gameWrap">
+    <div class="peg" data-peg="0"><div class="peg-label">Source (A)</div></div>
+    <div class="peg" data-peg="1"><div class="peg-label">Aux (B)</div></div>
+    <div class="peg" data-peg="2"><div class="peg-label">Target (C)</div></div>
+</div>
+
+<div id="hud">
+    <div id="moves">Moves: 0</div>
+    <div id="timer">Time: 0s</div>
+    <button id="resetBtn" class="secondary">Reset Level</button>
+    <button id="nextBtn" disabled>Next Level</button>
+</div>
+
+<div id="resultsPanel">
+    <h3>Play Summary</h3>
+    <div id="summaryText"></div>
+
+    <h4>Save your result</h4>
+    <div style="max-width:520px">
+        <input id="playerName" placeholder="Your name (required)" />
+        <input id="playerEmail" placeholder="Your email (optional)" />
+        <div class="row">
+            <button id="saveBtn">Save to Firebase</button>
+            <button id="downloadBtn" class="secondary">Download JSON</button>
+        </div>
+        <div id="saveStatus" style="margin-top:8px; font-size:14px; color:#bfe3b4"></div>
+    </div>
+</div>
+
+<footer>Click a peg to pick up its top disk, click another peg to drop it. Valid move = smaller onto larger or empty peg.</footer>
+
+<!-- Single module script contains game + Firebase code. Replace firebaseConfig below with your own. -->
+<script type="module">
+    // ---------- FIREBASE IMPORTS (CDN modular) ----------
+    // Using Firebase modular imports via CDN (works on static pages). See Firebase docs for alternatives.
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // ---------- PASTE YOUR FIREBASE CONFIG HERE ----------
+    // Create a web app in Firebase console -> copy config and paste here.
+    const firebaseConfig = {
+        apiKey: "AIzaSyCVWlLh1tnOma47ti5GZDVvSkdWzz3AX64",
+        authDomain: "vrmb-2c277.firebaseapp.com",
+        projectId: "vrmb-2c277",
+        storageBucket: "vrmb-2c277.firebasestorage.app",
+        messagingSenderId: "117018914090",
+        appId: "1:117018914090:web:dc3a273340a9ee9b74c253",
+        measurementId: "G-B5QGGFB33S"
+    };
+
+
+    // Only initialize if user replaced config (simple check)
+    let db = null;
+    let firebaseEnabled = false;
+    try {
+        if (firebaseConfig && firebaseConfig.projectId && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            firebaseEnabled = true;
+            console.log("Firebase initialized.");
+        } else {
+            console.warn("Firebase not initialized: please paste your firebaseConfig in the script.");
+        }
+    } catch (err) {
+        console.warn("Firebase init error:", err);
+    }
+
+    // ---------- GAME LOGIC ----------
+    const levels = [3, 4, 5];        // three levels: 3,4,5 disks
+    let currentLevel = 0;
+    let diskCount = levels[currentLevel];
+    let moves = 0;
+    let timerInterval = null;
+    let startTime = null;
+    const levelResults = [];        // store {moves, timeSec} per level
+
+    const pegs = [...document.querySelectorAll('.peg')];
+    const movesEl = document.getElementById('moves');
+    const timerEl = document.getElementById('timer');
+    const levelText = document.getElementById('levelText');
+    const resetBtn = document.getElementById('resetBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const resultsPanel = document.getElementById('resultsPanel');
+    const summaryText = document.getElementById('summaryText');
+    const saveBtn = document.getElementById('saveBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const saveStatus = document.getElementById('saveStatus');
+
+    let picked = null; // the DOM node of disk currently picked
+
+    // Create disks for current level
+    function createLevel(n) {
+        diskCount = n;
+        moves = 0;
+        updateMoves();
+        resetTimer();
+        levelText.textContent = `Level ${currentLevel+1} — ${n} disks`;
+        nextBtn.disabled = true;
+        resultsPanel.style.display = 'none';
+        picked = null;
+        // clear pegs
+        pegs.forEach(p => p.innerHTML = '<div class="peg-label">'+(p.dataset.peg==0?'Source (A)':p.dataset.peg==1?'Aux (B)':'Target (C)')+'</div>');
+        // create disks on peg 0 (largest at bottom)
+        for (let i = n; i >= 1; i--) {
+            const disk = document.createElement('div');
+            disk.className = 'disk';
+            disk.dataset.size = i;
+            // width relative to size
+            const w = 60 + i * 20;
+            disk.style.width = w + 'px';
+            disk.textContent = `#${i}`;
+            // append to peg 0 (source)
+            pegs[0].appendChild(disk);
+        }
+    }
+
+    // Update moves display
+    function updateMoves() { movesEl.textContent = `Moves: ${moves}`; }
+
+    // Timer controls
+    function startTimer() {
+        if (timerInterval) return;
+        startTime = Date.now();
+        timerInterval = setInterval(() => {
+            const s = Math.floor((Date.now() - startTime) / 1000);
+            timerEl.textContent = `Time: ${s}s`;
+        }, 500);
+    }
+    function stopTimer() {
+        if (!timerInterval) return;
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+    function resetTimer() {
+        stopTimer();
+        timerEl.textContent = 'Time: 0s';
+        startTime = null;
+    }
+
+    // Peg click handler
+    pegs.forEach(p => {
+        p.addEventListener('click', () => {
+            // pick or drop
+            const top = getTopDisk(p);
+            if (!picked) {
+                // pick top disk from clicked peg
+                if (!top) return; // nothing to pick
+                picked = top;
+                picked.classList.add('picked');
+                startTimer();
+            } else {
+                // trying to drop onto this peg
+                // avoid dropping back to same top (no-op if same peg)
+                const fromPeg = picked.parentElement;
+                if (p === fromPeg) {
+                    // deselect on same peg
+                    picked.classList.remove('picked');
+                    picked = null;
+                    return;
+                }
+                const targetTop = getTopDisk(p);
+                // check legality
+                const pickedSize = parseInt(picked.dataset.size, 10);
+                const targetSize = targetTop ? parseInt(targetTop.dataset.size, 10) : Infinity;
+                if (pickedSize < targetSize) {
+                    // legal
+                    p.appendChild(picked);
+                    picked.classList.remove('picked');
+                    picked = null;
+                    moves += 1;
+                    updateMoves();
+                    // startTimer already started on pick; continue
+                    checkCompletion();
+                } else {
+                    // illegal move
+                    // small visual feedback
+                    picked.classList.add('picked');
+                    alert('Invalid move: cannot place larger disk on smaller disk.');
+                }
+            }
+        });
+    });
+
+    function getTopDisk(pegEl) {
+        // pegEl children: label is first child (we inserted label at index 0),
+        // disks appended after. We want last disk element (child element that is .disk).
+        const disks = [...pegEl.querySelectorAll('.disk')];
+        return disks.length ? disks[disks.length - 1] : null;
+    }
+
+    function checkCompletion() {
+        // Completion: all disks on target peg (peg index 2)
+        const targetPeg = pegs[2];
+        const currentCount = targetPeg.querySelectorAll('.disk').length;
+        if (currentCount === diskCount) {
+            // level completed
+            stopTimer();
+            const timeSec = Math.floor((Date.now() - startTime) / 1000);
+            levelResults[currentLevel] = { moves, timeSec, disks: diskCount };
+            nextBtn.disabled = false;
+            if (currentLevel < levels.length - 1) {
+                alert(`Level ${currentLevel+1} complete — moves: ${moves}, time: ${timeSec}s. Click Next Level to continue.`);
+            } else {
+                // All levels done -> show summary + save form
+                showSummary();
+            }
+        }
+    }
+
+    function showSummary() {
+        // build summary for all finished levels
+        let html = '';
+        let totalMoves = 0, totalTime = 0;
+        for (let i = 0; i < levels.length; i++) {
+            const r = levelResults[i] || { moves: 0, timeSec: 0, disks: levels[i] };
+            html += `<div>Level ${i+1} (${r.disks} disks): Moves = ${r.moves}, Time = ${r.timeSec}s</div>`;
+            totalMoves += r.moves;
+            totalTime += r.timeSec;
+        }
+        html += `<hr><div><strong>Total</strong>: Moves = ${totalMoves}, Time = ${totalTime}s</div>`;
+        summaryText.innerHTML = html;
+        resultsPanel.style.display = 'block';
+    }
+
+    resetBtn.addEventListener('click', () => {
+        createLevel(levels[currentLevel]);
+    });
+
+    nextBtn.addEventListener('click', () => {
+        if (currentLevel < levels.length - 1) {
+            currentLevel++;
+            createLevel(levels[currentLevel]);
+        }
+        if (currentLevel === levels.length - 1) {
+            nextBtn.disabled = true;
+        }
+    });
+
+    // Download JSON of results
+    downloadBtn.addEventListener('click', () => {
+        const name = document.getElementById('playerName').value || '';
+        const email = document.getElementById('playerEmail').value || '';
+        const payload = { name, email, results: levelResults, createdAt: new Date().toISOString() };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'towerOfHanoi_result.json';
+        a.click();
+        URL.revokeObjectURL(url);
+    });
+
+    // Save to Firestore
+    saveBtn.addEventListener('click', async () => {
+        saveStatus.textContent = '';
+        if (!firebaseEnabled || !db) {
+            saveStatus.style.color = '#ffb3b3';
+            saveStatus.textContent = 'Firebase is not initialized. Paste config into the code.';
+            return;
+        }
+        const name = document.getElementById('playerName').value.trim();
+        if (!name) { alert('Please enter your name'); return; }
+        const email = document.getElementById('playerEmail').value.trim();
+        try {
+            saveBtn.disabled = true;
+            saveStatus.style.color = '#bfe3b4';
+            saveStatus.textContent = 'Saving...';
+            // add document to collection 'towerOfHanoiResults'
+            await addDoc(collection(db, 'towerOfHanoiResults'), {
+                name,
+                email,
+                results: levelResults,
+                createdAt: serverTimestamp()
+            });
+            saveStatus.style.color = '#bfe3b4';
+            saveStatus.textContent = 'Saved ✅ — check Firestore console.';
+        } catch (err) {
+            console.error(err);
+            saveStatus.style.color = '#ffb3b3';
+            saveStatus.textContent = 'Error saving: ' + (err.message || err);
+        } finally {
+            saveBtn.disabled = false;
+        }
+    });
+
+    // Initialize first level on page load
+    createLevel(levels[0]);
+</script>
+</body>
+</html>
